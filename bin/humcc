@@ -1,0 +1,154 @@
+#!/usr/bin/perl -w
+
+
+# Need perl > 5.10 to use logic-defined or
+use 5.006; use v5.10.1;
+use File::Basename;
+
+if(scalar @ARGV == 0) {
+    print "No Arguments passed, exiting ...\n";
+    exit(-1);
+}
+
+my $HUMROOT = $ENV{"HUMROOT"};
+my $isGenerateDep = 0;
+my $isXGiven = 0;
+my $isCUDAFile = 0;
+my $isOutputDefined = 0;
+my $isCompileAndAssemble = 0;
+my $toolArgs = "-I/usr/local/cuda/include -cudart none -L$HUMROOT/lib -lhum";  # arguments to pass to the C/C++ compiler
+my $originalArgs = "";
+my $fullArgs = "";
+my $CUDAFile;
+my $defineList = "";
+my $includeList = "";
+my $exportDevice = "-export-device";
+
+foreach $arg (@ARGV) {
+  $originalArgs .= " $arg";
+    
+    $trimarg = $arg;
+    $trimarg =~ s/^\s+|\s+$//g;  # Remove whitespace
+
+    if ($arg =~ m/^-M/) {
+      $isGenerateDep = 1;
+    }
+
+    if ($arg =~ m/^-I/) {
+      $includeList .= "-extra-arg=\"$arg\" ";
+    }
+
+    if ($arg =~ m/^-D/) {
+      $defineList .= "-extra-arg=\"$arg\" ";
+    }
+
+    if ($arg =~ m/^-std/) {
+      $defineList .= "-extra-arg=\"$arg\" ";
+    }
+
+    # do not export device file for dependency file
+    if ($arg =~ /\.d$/) {
+      $exportDevice = "";
+    }
+    
+    # check if -o option is given
+    if ($arg =~ m/^-o/) {
+      $isOutputDefined = 1;
+    }
+
+    # check if -c option is given
+    if ($arg =~ m/^-c/) {
+      $isCompileAndAssemble = 1;
+    }
+
+    # check "-x cu"
+    if ($arg =~ m/cu/ and $isXGiven) {
+      $isCUDAFile = 1;
+    }
+    if ($arg =~ m/^-x/) {
+      $isXGiven = 1;
+    }
+    else {
+      $isXGiven = 0;
+    }
+
+    # get file name
+    if (($arg =~ /\.c$/) or ($arg =~ /\.cc$/) or ($arg =~ /\.cpp$/) or ($arg =~ /\.cxx$/)) {
+      if ($isCUDAFile) {
+        $CUDAFile = $arg;
+      }
+      else {
+        $toolArgs .= " $arg";
+      }
+    }
+    elsif (($arg =~ /\.cu$/)) {
+      $isCUDAFile = 1;
+      $CUDAFile = $arg;
+    }
+    else {
+      # ignore some nvcc options
+#      if (($arg =~ m/^-ccbin/) or
+#          ($arg eq '-Xcompiler')) {
+#      }
+#      else {
+        $toolArgs .= " $arg";
+#      }
+    }
+
+    $fullArgs .= " $arg";
+}
+
+# do not preprocess when generate-dependencies option is given
+if ($isGenerateDep) {
+  my $nvccCMD="nvcc" . $originalArgs;
+  system ("$nvccCMD");
+  exit 0;
+}
+
+#print "[ toolArgs ] = $toolArgs\n";
+#print "[ fullArgs ] = $fullArgs\n";
+
+my $prep="cuda-preprocessor";
+my $compCMD;
+
+# do preprocessing first
+if ($isCUDAFile) {
+    $CUDAPreFile = "$CUDAFile";
+
+    my $prepCMD = "$prep -extra-arg=\"-I.\" -extra-arg=\"--cuda-host-only\" $defineList$includeList$exportDevice $CUDAPreFile --";
+    print $prepCMD . "\n";
+    system ("$prepCMD");
+
+    #print "CUDAFile = $CUDAPreFile\n";
+    $CUDAFileDir = dirname("$CUDAPreFile");
+
+
+    if(length($CUDAFileDir) > 0) {
+      $CUDATmpFileName = $CUDAFileDir . "/";
+    }
+    
+    $CUDATmpFileName .= fileparse($CUDAPreFile, qr/\.[^.]*/);
+    $CUDATmpFileName .= ".tmp.cu";
+
+    $compCMD = "nvcc $toolArgs $CUDATmpFileName";
+    #$compCMD = "g++ $toolArgs $CUDAFile.host.tmp.cpp";
+
+    # if -o is not given and -c is given
+    if (!$isOutputDefined && $isCompileAndAssemble) {
+      $CUDAOutFileName .= fileparse($CUDAPreFile, qr/\.[^.]*/);
+      $CUDAOutFileName .= ".o";
+
+      $compCMD .= " -o $CUDAOutFileName";
+    }
+}
+else {
+    $compCMD = "nvcc $toolArgs";
+}
+
+# and then pass it to C/C++ compiler
+print "compCMD=$compCMD\n";
+system ("$compCMD");
+
+if ($isCUDAFile) {
+  unlink("$CUDATmpFileName");
+}
